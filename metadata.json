@@ -1,0 +1,5 @@
+{
+  "name": "Hanout - حانوت",
+  "description": "تطبيق إدارة المحل التجاري - إدارة المنتجات، المبيعات، والتقارير",
+  "requestFramePermissions": ["camera"]
+}
