@@ -19,9 +19,39 @@ import {
   CheckCircle2,
   AlertTriangle,
   Clock,
-  Calculator
+  Calculator,
+  FileText,
+  Users,
+  Download,
+  CreditCard,
+  History,
+  Store
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+// @ts-ignore
+import html2pdf from 'html2pdf.js';
+
+const Logo = ({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) => {
+  const dimensions = {
+    sm: 'w-10 h-10',
+    md: 'w-24 h-24',
+    lg: 'w-32 h-32'
+  };
+  
+  const logoUrl = "https://lh3.googleusercontent.com/d/1HQn7i1ULdPr9k5E4Qr_P0aZYwgHiYnw4";
+
+  return (
+    <div className={`${dimensions[size]} flex items-center justify-center relative overflow-hidden`}>
+      <img 
+        src={logoUrl} 
+        alt="App Logo" 
+        className="w-full h-full object-contain"
+        referrerPolicy="no-referrer"
+      />
+    </div>
+  );
+};
+
 import { 
   LineChart, 
   Line, 
@@ -43,7 +73,42 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-type Screen = 'dashboard' | 'products' | 'add-product' | 'sales' | 'reports' | 'notifications' | 'settings' | 'pos' | 'import-products' | 'capital';
+type Screen = 'dashboard' | 'products' | 'add-product' | 'sales' | 'reports' | 'notifications' | 'settings' | 'pos' | 'import-products' | 'capital' | 'invoices' | 'credit';
+
+interface Invoice {
+  id: number;
+  customer_name: string;
+  total_amount: number;
+  status: 'open' | 'closed';
+  created_at: string;
+}
+
+interface InvoiceItem {
+  id: number;
+  invoice_id: number;
+  product_id: number;
+  quantity: number;
+  price: number;
+  product_name?: string;
+}
+
+interface Customer {
+  id: number;
+  name: string;
+  phone: string;
+  total_debt: number;
+  created_at: string;
+}
+
+interface Debt {
+  id: number;
+  customer_id: number;
+  amount: number;
+  description: string;
+  type: 'purchase' | 'payment';
+  status: 'unpaid' | 'paid';
+  created_at: string;
+}
 
 const AppContent = () => {
   const { t, language, setLanguage, isRTL } = useLanguage();
@@ -62,9 +127,19 @@ const AppContent = () => {
   const [stats, setStats] = useState<Stats | null>(null);
   const [salesHistory, setSalesHistory] = useState<Sale[]>([]);
   const [importsHistory, setImportsHistory] = useState<Import[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [activeInvoice, setActiveInvoice] = useState<{ items: { product: Product; quantity: number }[]; customerName: string } | null>(null);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [customerDebts, setCustomerDebts] = useState<Debt[]>([]);
+  const [quickAmount, setQuickAmount] = useState('');
+  const [quickDesc, setQuickDesc] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [expandedInvoiceId, setExpandedInvoiceId] = useState<number | null>(null);
+  const [expandedInvoiceItems, setExpandedInvoiceItems] = useState<InvoiceItem[]>([]);
   const [notificationCount, setNotificationCount] = useState(0);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
@@ -153,24 +228,8 @@ const AppContent = () => {
           className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-xl border border-slate-100 dark:border-slate-800"
         >
           <div className="text-center mb-8">
-            <div className="bg-[#1a2b3c] w-24 h-24 rounded-[2rem] flex items-center justify-center mx-auto mb-4 shadow-xl relative overflow-hidden border-4 border-white/10">
-              {/* Awning */}
-              <div className="absolute top-2 left-1/2 -translate-x-1/2 w-16 h-8 flex z-20">
-                {[...Array(4)].map((_, i) => (
-                  <div key={i} className={`flex-1 h-full ${i % 2 === 0 ? 'bg-emerald-400' : 'bg-emerald-500'} rounded-b-lg shadow-sm`} />
-                ))}
-              </div>
-              {/* Store Body */}
-              <div className="absolute bottom-4 w-14 h-10 bg-emerald-600/20 rounded-lg border border-emerald-500/30 flex items-center justify-center">
-                <div className="w-8 h-1 bg-emerald-400/40 rounded-full mb-2" />
-                <div className="w-6 h-1 bg-emerald-400/40 rounded-full" />
-              </div>
-              {/* Barcode stylized */}
-              <div className="absolute right-2 bottom-6 w-6 h-8 bg-slate-800/80 rounded-md border border-slate-700 flex flex-col gap-0.5 p-1 items-center justify-center">
-                {[...Array(5)].map((_, i) => (
-                  <div key={i} className="w-full h-[1px] bg-slate-400" />
-                ))}
-              </div>
+            <div className="flex justify-center mb-4">
+              <Logo size="md" />
             </div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{t('appName')}</h1>
             <p className="text-slate-500 dark:text-slate-400 text-sm">{authMode === 'login' ? t('login') : t('signup')}</p>
@@ -220,30 +279,183 @@ const AppContent = () => {
     );
   }
 
+  const fetchInvoiceItems = async (invoiceId: number) => {
+    if (expandedInvoiceId === invoiceId) {
+      setExpandedInvoiceId(null);
+      setExpandedInvoiceItems([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}/items`);
+      if (res.ok) {
+        const items = await res.json();
+        setExpandedInvoiceItems(items);
+        setExpandedInvoiceId(invoiceId);
+      }
+    } catch (error) {
+      console.error('Error fetching invoice items:', error);
+    }
+  };
+
+  const fetchCustomerDebts = async (customerId: number) => {
+    try {
+      const res = await fetch(`/api/customers/${customerId}/debts`);
+      if (res.ok) {
+        const debts = await res.json();
+        setCustomerDebts(debts);
+      }
+    } catch (error) {
+      console.error('Error fetching customer debts:', error);
+    }
+  };
+
   const fetchData = async () => {
     try {
-      const [prodRes, catRes, statsRes, salesRes, importsRes] = await Promise.all([
+      const [prodRes, catRes, statsRes, salesRes, importsRes, invoiceRes, customerRes] = await Promise.all([
         fetch('/api/products'),
         fetch('/api/categories'),
         fetch('/api/stats'),
         fetch('/api/sales/history'),
-        fetch('/api/imports/history')
+        fetch('/api/imports/history'),
+        fetch('/api/invoices'),
+        fetch('/api/customers')
       ]);
-      const [prods, cats, st, sales, imports] = await Promise.all([
+      const [prods, cats, st, sales, imports, invs, custs] = await Promise.all([
         prodRes.json(),
         catRes.json(),
         statsRes.json(),
         salesRes.json(),
-        importsRes.json()
+        importsRes.json(),
+        invoiceRes.json(),
+        customerRes.json()
       ]);
       setProducts(prods);
       setCategories(cats);
       setStats(st);
       setSalesHistory(sales);
       setImportsHistory(imports);
+      setInvoices(invs);
+      setCustomers(custs);
       setNotificationCount(st.lowStock + st.expiringSoon);
     } catch (error) {
       console.error('Error fetching data:', error);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const res = await fetch('/api/export');
+      if (res.ok) {
+        const data = await res.json();
+        
+        // Create a hidden container for the PDF content
+        const element = document.createElement('div');
+        element.style.padding = '40px';
+        element.style.fontFamily = 'Arial, sans-serif';
+        element.style.direction = isRTL ? 'rtl' : 'ltr';
+        element.style.color = '#1a2b3c';
+        
+        const date = new Date().toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+
+        element.innerHTML = `
+          <div style="text-align: center; margin-bottom: 40px; border-bottom: 2px solid #e2e8f0; padding-bottom: 20px;">
+            <h1 style="margin: 0; color: #059669;">${user?.shop_name || t('appName')}</h1>
+            <p style="margin: 10px 0 0 0; color: #64748b; font-size: 14px;">${t('reports')} - ${date}</p>
+          </div>
+
+          <div style="margin-bottom: 40px;">
+            <h2 style="font-size: 18px; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 15px;">${t('sales')}</h2>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background: #f8fafc; text-align: ${isRTL ? 'right' : 'left'};">
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('productName')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('quantity')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('total')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('profit')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('history')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.sales.map((s: any) => `
+                  <tr>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${s.product_name || 'Product'}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${s.quantity}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${s.total_price.toFixed(2)}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${s.profit.toFixed(2)}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${new Date(s.sale_date).toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div style="margin-bottom: 40px;">
+            <h2 style="font-size: 18px; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 15px;">${t('invoices')}</h2>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background: #f8fafc; text-align: ${isRTL ? 'right' : 'left'};">
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('customerName')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('total')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('history')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.invoices.map((inv: any) => `
+                  <tr>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${inv.customer_name || t('customerName')}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${inv.total_amount.toFixed(2)}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${new Date(inv.created_at).toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div style="margin-bottom: 40px;">
+            <h2 style="font-size: 18px; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 15px;">${t('credit')}</h2>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background: #f8fafc; text-align: ${isRTL ? 'right' : 'left'};">
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('customerName')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('amount')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('description')}</th>
+                  <th style="padding: 10px; border: 1px solid #e2e8f0;">${t('history')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${data.debts.map((d: any) => `
+                  <tr>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${d.customer_name || 'Customer'}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0; color: ${d.type === 'purchase' ? '#dc2626' : '#059669'};">
+                      ${d.type === 'purchase' ? '+' : '-'}${d.amount.toFixed(2)}
+                    </td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${d.description || ''}</td>
+                    <td style="padding: 10px; border: 1px solid #e2e8f0;">${new Date(d.created_at).toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+
+        const opt = {
+          margin: 10,
+          filename: `hanout_report_${new Date().toISOString().split('T')[0]}.pdf`,
+          image: { type: 'jpeg' as const, quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true },
+          jsPDF: { unit: 'mm' as const, format: 'a4' as const, orientation: 'portrait' as const }
+        };
+
+        html2pdf().from(element).set(opt).save();
+      }
+    } catch (error) {
+      console.error('Error exporting data:', error);
     }
   };
 
@@ -351,6 +563,31 @@ const AppContent = () => {
   };
 
   const handleSale = async (productId: number, quantity: number) => {
+    const product = products.find(p => p.id === productId);
+    if (!product) return false;
+
+    if (activeInvoice) {
+      setActiveInvoice(prev => {
+        if (!prev) return prev;
+        const existingItem = prev.items.find(item => item.product.id === productId);
+        if (existingItem) {
+          return {
+            ...prev,
+            items: prev.items.map(item => 
+              item.product.id === productId 
+                ? { ...item, quantity: item.quantity + quantity } 
+                : item
+            )
+          };
+        }
+        return {
+          ...prev,
+          items: [...prev.items, { product, quantity }]
+        };
+      });
+      return true;
+    }
+
     try {
       const res = await fetch('/api/sales', {
         method: 'POST',
@@ -411,14 +648,7 @@ const AppContent = () => {
           </button>
         )}
         {!showBack && (
-          <div className="bg-[#1a2b3c] w-10 h-10 rounded-xl flex items-center justify-center shadow-sm relative overflow-hidden border-2 border-white/5">
-            <div className="absolute top-1 left-1/2 -translate-x-1/2 w-7 h-3 flex z-20">
-              {[...Array(4)].map((_, i) => (
-                <div key={i} className={`flex-1 h-full ${i % 2 === 0 ? 'bg-emerald-400' : 'bg-emerald-500'} rounded-b-sm`} />
-              ))}
-            </div>
-            <div className="absolute bottom-1.5 w-6 h-4 bg-emerald-600/20 rounded-sm border border-emerald-500/30" />
-          </div>
+          <Logo size="sm" />
         )}
         <h1 className="text-xl font-bold text-slate-900 dark:text-white">{title}</h1>
       </div>
@@ -439,7 +669,7 @@ const AppContent = () => {
         {currentScreen === 'dashboard' && (
           <button 
             onClick={() => setCurrentScreen('pos')}
-            className="bg-emerald-600 text-white p-2 rounded-full shadow-lg shadow-emerald-200 dark:shadow-emerald-900/20"
+            className="bg-blue-600 text-white p-2 rounded-full shadow-lg shadow-blue-200 dark:shadow-blue-900/20"
           >
             <Scan size={20} />
           </button>
@@ -485,13 +715,6 @@ const AppContent = () => {
             {/* Stats Grid */}
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800">
-                <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 w-10 h-10 rounded-xl flex items-center justify-center mb-3">
-                  <Package size={20} />
-                </div>
-                <p className="text-slate-500 dark:text-slate-400 text-xs">{t('totalProducts')}</p>
-                <p className="text-xl font-bold text-slate-900 dark:text-white">{stats?.totalProducts || 0}</p>
-              </div>
-              <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800">
                 <div className="bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 w-10 h-10 rounded-xl flex items-center justify-center mb-3">
                   <ShoppingCart size={20} />
                 </div>
@@ -512,6 +735,43 @@ const AppContent = () => {
                 <p className="text-slate-500 dark:text-slate-400 text-xs">{t('todayProfit')}</p>
                 <p className="text-xl font-bold text-slate-900 dark:text-white">{stats?.todayProfit.toFixed(2)} {t('currencySymbol')}</p>
               </div>
+              <div 
+                onClick={() => setCurrentScreen('credit')}
+                className="bg-white dark:bg-slate-900 p-4 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800 cursor-pointer"
+              >
+                <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 w-10 h-10 rounded-xl flex items-center justify-center mb-3">
+                  <CreditCard size={20} />
+                </div>
+                <p className="text-slate-500 dark:text-slate-400 text-xs">{t('credit')}</p>
+                <p className="text-xl font-bold text-slate-900 dark:text-white">
+                  {customers.reduce((acc, c) => acc + c.total_debt, 0).toFixed(2)} {t('currencySymbol')}
+                </p>
+              </div>
+            </div>
+
+            {/* Dashboard Actions */}
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={() => {
+                  setActiveInvoice({ items: [], customerName: '' });
+                  setCurrentScreen('pos');
+                }}
+                className="bg-emerald-600 text-white p-4 rounded-3xl shadow-lg shadow-emerald-200 dark:shadow-emerald-900/20 flex flex-col items-center justify-center gap-2 transition-transform active:scale-95"
+              >
+                <div className="bg-white/20 p-2 rounded-xl">
+                  <Plus size={24} />
+                </div>
+                <span className="font-bold text-sm">{t('activeInvoice')}</span>
+              </button>
+              <button 
+                onClick={() => setCurrentScreen('pos')}
+                className="bg-white dark:bg-slate-900 p-4 rounded-3xl shadow-sm border border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center gap-2 transition-transform active:scale-95"
+              >
+                <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-600 p-2 rounded-xl">
+                  <Scan size={24} />
+                </div>
+                <span className="font-bold text-sm text-slate-900 dark:text-white">{t('pos')}</span>
+              </button>
             </div>
 
             {/* Alerts */}
@@ -744,7 +1004,7 @@ const AppContent = () => {
                 <button 
                   type="button"
                   onClick={() => setIsScanning(true)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-600"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-600"
                 >
                   <Scan size={18} />
                 </button>
@@ -837,8 +1097,221 @@ const AppContent = () => {
           exit={{ opacity: 0, scale: 0.95 }}
           className="flex-1 flex flex-col"
         >
-          <Header title={t('pos')} showBack />
+          <Header title={activeInvoice ? t('activeInvoice') : t('pos')} showBack />
           <div className="p-4 flex-1 flex flex-col space-y-4">
+            {activeInvoice && (
+              <div className="bg-emerald-50 dark:bg-emerald-900/10 p-4 rounded-2xl border border-emerald-100 dark:border-emerald-900/20 space-y-3">
+                <div className="flex items-center justify-between relative">
+                  <div className="flex-1 relative">
+                    <input 
+                      type="text" 
+                      placeholder={t('customerName')}
+                      value={activeInvoice.customerName}
+                      onChange={(e) => {
+                        setActiveInvoice(prev => prev ? { ...prev, customerName: e.target.value } : null);
+                        setCustomerSearch(e.target.value);
+                      }}
+                      onFocus={() => setCustomerSearch(activeInvoice.customerName)}
+                      className="w-full bg-transparent border-b border-emerald-200 dark:border-emerald-800 text-sm font-bold focus:outline-none text-slate-900 dark:text-white pb-1"
+                    />
+                    {customerSearch && (
+                      <div className="absolute top-full left-0 right-0 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl shadow-xl mt-1 z-50 max-h-40 overflow-y-auto">
+                        {customers
+                          .filter(c => c.name.toLowerCase().includes(customerSearch.toLowerCase()))
+                          .map(c => (
+                            <div 
+                              key={c.id} 
+                              onClick={() => {
+                                setActiveInvoice(prev => prev ? { ...prev, customerName: c.name } : null);
+                                setCustomerSearch('');
+                              }}
+                              className="p-3 text-xs hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer border-b border-slate-50 dark:border-slate-800 last:border-0 flex justify-between items-center"
+                            >
+                              <span className="font-bold text-slate-900 dark:text-white">{c.name}</span>
+                              <span className="text-[10px] text-slate-400">{c.phone}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                  <button 
+                    onClick={() => setActiveInvoice(null)}
+                    className="text-slate-400 ml-2"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {activeInvoice.items.length > 0 ? (
+                    activeInvoice.items.map((item, idx) => (
+                      <div key={idx} className="flex justify-between items-center bg-white/60 dark:bg-slate-900/60 p-2 rounded-xl border border-emerald-100/50 dark:border-emerald-900/30 animate-in fade-in slide-in-from-left-2 duration-200">
+                        <div>
+                          <p className="text-xs font-bold text-slate-900 dark:text-white">{item.product.name}</p>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400">{t('quantity')}: <span className="font-bold text-emerald-600">{item.quantity}</span></p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-1">
+                            <button 
+                              onClick={() => {
+                                setActiveInvoice(prev => {
+                                  if (!prev) return null;
+                                  return {
+                                    ...prev,
+                                    items: prev.items.map(i => 
+                                      i.product.id === item.product.id 
+                                        ? { ...i, quantity: Math.max(1, i.quantity - 1) } 
+                                        : i
+                                    )
+                                  };
+                                });
+                              }}
+                              className="w-5 h-5 flex items-center justify-center bg-white dark:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400"
+                            >
+                              -
+                            </button>
+                            <button 
+                              onClick={() => {
+                                setActiveInvoice(prev => {
+                                  if (!prev) return null;
+                                  return {
+                                    ...prev,
+                                    items: prev.items.map(i => 
+                                      i.product.id === item.product.id 
+                                        ? { ...i, quantity: i.quantity + 1 } 
+                                        : i
+                                    )
+                                  };
+                                });
+                              }}
+                              className="w-5 h-5 flex items-center justify-center bg-white dark:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400"
+                            >
+                              +
+                            </button>
+                          </div>
+                          <div className="text-right min-w-[60px]">
+                            <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400">{(item.product.selling_price * item.quantity).toFixed(2)}</p>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              setActiveInvoice(prev => {
+                                if (!prev) return null;
+                                return {
+                                  ...prev,
+                                  items: prev.items.filter(i => i.product.id !== item.product.id)
+                                };
+                              });
+                            }}
+                            className="text-red-400 hover:text-red-600"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-center text-[10px] text-slate-400 py-2 italic">{t('noProducts')}</p>
+                  )}
+                </div>
+                <div className="pt-2 border-t border-emerald-100 dark:border-emerald-900/20 flex justify-between items-center gap-2">
+                  <span className="font-bold text-sm">{t('total')}: {activeInvoice.items.reduce((acc, item) => acc + (item.product.selling_price * item.quantity), 0).toFixed(2)}</span>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={async () => {
+                        if (!activeInvoice.customerName) {
+                          alert(t('customerName'));
+                          return;
+                        }
+                        let customer = customers.find(c => c.name === activeInvoice.customerName);
+                        if (!customer) {
+                          const res = await fetch('/api/customers', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name: activeInvoice.customerName })
+                          });
+                          if (res.ok) {
+                            const data = await res.json();
+                            customer = { id: data.id, name: activeInvoice.customerName, phone: '', total_debt: 0, created_at: '' };
+                          }
+                        }
+                        if (customer) {
+                          const total = activeInvoice.items.reduce((acc, item) => acc + (item.product.selling_price * item.quantity), 0);
+                          
+                          // 1. Create the invoice first to get its ID
+                          const invRes = await fetch('/api/invoices', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              customer_name: activeInvoice.customerName,
+                              total_amount: total,
+                              status: 'open',
+                              items: activeInvoice.items.map(item => ({
+                                product_id: item.product.id,
+                                quantity: item.quantity,
+                                price: item.product.selling_price
+                              }))
+                            })
+                          });
+
+                          if (invRes.ok) {
+                            const invData = await invRes.json();
+                            const invoiceId = invData.id;
+
+                            // 2. Create the debt linked to this invoice
+                            const debtRes = await fetch('/api/debts', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                customer_id: customer.id,
+                                amount: total,
+                                type: 'purchase',
+                                invoice_id: invoiceId,
+                                description: activeInvoice.items.map(i => `${i.product.name} x${i.quantity}`).join(', ')
+                              })
+                            });
+
+                            if (debtRes.ok) {
+                              fetchData();
+                              setActiveInvoice(null);
+                              setAlertModal({ isOpen: true, title: t('success'), message: t('success') });
+                            }
+                          }
+                        }
+                      }}
+                      className="bg-amber-600 text-white text-[10px] font-bold px-3 py-2 rounded-xl"
+                    >
+                      {t('credit')}
+                    </button>
+                    <button 
+                      onClick={async () => {
+                        const res = await fetch('/api/invoices', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            customer_name: activeInvoice.customerName,
+                            total_amount: activeInvoice.items.reduce((acc, item) => acc + (item.product.selling_price * item.quantity), 0),
+                            status: 'closed',
+                            items: activeInvoice.items.map(item => ({
+                              product_id: item.product.id,
+                              quantity: item.quantity,
+                              price: item.product.selling_price
+                            }))
+                          })
+                        });
+                        if (res.ok) {
+                          fetchData();
+                          setActiveInvoice(null);
+                          setAlertModal({ isOpen: true, title: t('success'), message: t('success') });
+                        }
+                      }}
+                      className="bg-emerald-600 text-white text-[10px] font-bold px-3 py-2 rounded-xl"
+                    >
+                      {t('closeInvoice')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input 
@@ -850,7 +1323,7 @@ const AppContent = () => {
               />
               <button 
                 onClick={() => setIsScanning(true)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-600"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-600"
               >
                 <Scan size={18} />
               </button>
@@ -1033,6 +1506,295 @@ const AppContent = () => {
           </div>
         </motion.div>
       )}
+
+      {currentScreen === 'invoices' && (
+        <motion.div 
+          initial={{ opacity: 0, x: 20 }} 
+          animate={{ opacity: 1, x: 0 }} 
+          exit={{ opacity: 0, x: -20 }}
+          className="flex-1"
+        >
+          <Header title={t('invoices')} />
+          <div className="p-4 space-y-4">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800 overflow-hidden">
+              <div className="p-4 border-b border-slate-50 dark:border-slate-800 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">{t('invoiceHistory')}</h3>
+                <button 
+                  onClick={() => {
+                    setActiveInvoice({ items: [], customerName: '' });
+                    setCurrentScreen('pos');
+                  }}
+                  className="bg-emerald-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1"
+                >
+                  <Plus size={14} />
+                  {t('newInvoice')}
+                </button>
+              </div>
+              <div className="divide-y divide-slate-50 dark:divide-slate-800">
+                {invoices.map(inv => (
+                  <div key={inv.id} className="divide-y divide-slate-50 dark:divide-slate-800">
+                    <div 
+                      onClick={() => fetchInvoiceItems(inv.id)}
+                      className="p-4 flex items-center justify-between cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-slate-900 dark:text-white">{inv.customer_name || t('customerName')}</p>
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                          {new Date(inv.created_at).toLocaleDateString()} {new Date(inv.created_at).toLocaleTimeString()}
+                        </p>
+                      </div>
+                      <div className="text-right flex flex-col items-end gap-1">
+                        <p className="text-sm font-bold text-slate-900 dark:text-white">{inv.total_amount.toFixed(2)} {t('currencySymbol')}</p>
+                        <span 
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (inv.status === 'open') {
+                              const res = await fetch(`/api/invoices/${inv.id}`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ status: 'closed' })
+                              });
+                              if (res.ok) fetchData();
+                            }
+                          }}
+                          className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold cursor-pointer transition-transform active:scale-95 ${inv.status === 'closed' ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400' : 'bg-amber-100 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400'}`}
+                        >
+                          {inv.status === 'closed' ? t('paid') : t('unpaid')}
+                        </span>
+                      </div>
+                    </div>
+                    {expandedInvoiceId === inv.id && (
+                      <div className="bg-slate-50/50 dark:bg-slate-800/30 p-4 space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
+                        {expandedInvoiceItems.map(item => (
+                          <div key={item.id} className="flex justify-between text-[11px] text-slate-600 dark:text-slate-400">
+                            <span>{item.product_name} x{item.quantity}</span>
+                            <span>{(item.price * item.quantity).toFixed(2)} {t('currencySymbol')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {invoices.length === 0 && (
+                  <div className="p-8 text-center text-slate-400">{t('noProducts')}</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {currentScreen === 'credit' && (
+        <motion.div 
+          initial={{ opacity: 0, x: 20 }} 
+          animate={{ opacity: 1, x: 0 }} 
+          exit={{ opacity: 0, x: -20 }}
+          className="flex-1"
+        >
+          <Header title={t('credit')} />
+          <div className="p-4 space-y-4">
+            <form 
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                const data = Object.fromEntries(formData.entries());
+                const res = await fetch('/api/customers', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(data)
+                });
+                if (res.ok) {
+                  fetchData();
+                  e.currentTarget.reset();
+                }
+              }}
+              className="bg-white dark:bg-slate-900 p-4 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800 space-y-3"
+            >
+              <div className="grid grid-cols-2 gap-3">
+                <input 
+                  name="name" 
+                  placeholder={t('customerName')} 
+                  required 
+                  className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl py-2 px-3 text-sm text-slate-900 dark:text-white"
+                />
+                <input 
+                  name="phone" 
+                  placeholder={t('phone')} 
+                  className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl py-2 px-3 text-sm text-slate-900 dark:text-white"
+                />
+              </div>
+              <button className="w-full bg-emerald-600 text-white font-bold py-2 rounded-xl text-sm">
+                {t('addCustomer')}
+              </button>
+            </form>
+
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800 overflow-hidden">
+              <div className="p-4 border-b border-slate-50 dark:border-slate-800">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">{t('customers')}</h3>
+              </div>
+              <div className="divide-y divide-slate-50 dark:divide-slate-800">
+                {customers.map(cust => (
+                  <div key={cust.id} className="divide-y divide-slate-50 dark:divide-slate-800">
+                    <div 
+                      onClick={() => {
+                        if (selectedCustomer?.id === cust.id) {
+                          setSelectedCustomer(null);
+                          setCustomerDebts([]);
+                        } else {
+                          setSelectedCustomer(cust);
+                          fetchCustomerDebts(cust.id);
+                        }
+                      }}
+                      className="p-4 flex items-center justify-between cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                    >
+                      <div>
+                        <p className="text-sm font-bold text-slate-900 dark:text-white">{cust.name}</p>
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500">{cust.phone}</p>
+                      </div>
+                      <div className="text-right flex flex-col items-end gap-1">
+                        <p className="text-sm font-bold text-red-600 dark:text-red-400">{cust.total_debt.toFixed(2)} {t('currencySymbol')}</p>
+                        <button 
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const amount = prompt(t('amount'));
+                            if (amount) {
+                              const res = await fetch('/api/debts', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  customer_id: cust.id,
+                                  amount: Number(amount),
+                                  type: 'payment',
+                                  description: 'Payment'
+                                })
+                              });
+                              if (res.ok) {
+                                fetchData();
+                                if (selectedCustomer?.id === cust.id) fetchCustomerDebts(cust.id);
+                              }
+                            }
+                          }}
+                          className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded-lg font-bold"
+                        >
+                          {t('payment')}
+                        </button>
+                      </div>
+                    </div>
+                    {selectedCustomer?.id === cust.id && (
+                      <div className="bg-slate-50/50 dark:bg-slate-800/30 p-4 space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                        {/* Quick Transaction Form */}
+                        <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-100 dark:border-slate-800 space-y-3">
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{t('payment')}</p>
+                          <div className="flex flex-col gap-2">
+                            <input 
+                              type="number" 
+                              placeholder={t('amount')}
+                              value={quickAmount}
+                              onChange={(e) => setQuickAmount(e.target.value)}
+                              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+                            />
+                            <input 
+                              type="text" 
+                              placeholder={t('description')}
+                              value={quickDesc}
+                              onChange={(e) => setQuickDesc(e.target.value)}
+                              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <button 
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (!quickAmount) return;
+                                const res = await fetch('/api/debts', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    customer_id: cust.id,
+                                    amount: Number(quickAmount),
+                                    type: 'payment',
+                                    description: quickDesc || 'Payment'
+                                  })
+                                });
+                                if (res.ok) {
+                                  setQuickAmount('');
+                                  setQuickDesc('');
+                                  fetchData();
+                                  fetchCustomerDebts(cust.id);
+                                }
+                              }}
+                              className="flex-1 bg-emerald-600 text-white text-[10px] font-bold py-2 rounded-lg shadow-sm active:scale-95 transition-transform"
+                            >
+                              {t('payment')} (-)
+                            </button>
+                            <button 
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (!quickAmount) return;
+                                const res = await fetch('/api/debts', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    customer_id: cust.id,
+                                    amount: Number(quickAmount),
+                                    type: 'purchase',
+                                    description: quickDesc || 'Manual Debt'
+                                  })
+                                });
+                                if (res.ok) {
+                                  setQuickAmount('');
+                                  setQuickDesc('');
+                                  fetchData();
+                                  fetchCustomerDebts(cust.id);
+                                }
+                              }}
+                              className="flex-1 bg-red-600 text-white text-[10px] font-bold py-2 rounded-lg shadow-sm active:scale-95 transition-transform"
+                            >
+                              {t('debt')} (+)
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          {customerDebts.map(debt => (
+                          <div key={debt.id} className="flex justify-between items-center text-[10px]">
+                            <div className="flex items-center gap-2">
+                              <span className={`font-mono font-bold ${debt.type === 'payment' ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}`}>
+                                #{debt.id}
+                              </span>
+                              <span className="text-slate-500 dark:text-slate-400">
+                                {new Date(debt.created_at).toLocaleDateString()} {new Date(debt.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={debt.type === 'payment' ? 'text-emerald-600 font-bold' : 'text-red-600 font-bold'}>
+                                {debt.type === 'payment' ? '-' : '+'}{debt.amount.toFixed(2)}
+                              </span>
+                              <span 
+                                className={`px-2 py-0.5 rounded-full text-[9px] font-bold border ${
+                                  (debt.type === 'payment' || debt.status === 'paid') 
+                                    ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800' 
+                                    : 'bg-red-50 text-red-600 dark:bg-red-900/10 dark:text-red-400 border-red-100 dark:border-red-900/20'
+                                }`}
+                              >
+                                {(debt.type === 'payment' || debt.status === 'paid') ? t('paid') : t('debt')}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                        {customerDebts.length === 0 && (
+                          <p className="text-center text-[10px] text-slate-400 py-2">لا توجد معاملات</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    )}
 
       {currentScreen === 'capital' && (
         <motion.div 
@@ -1272,6 +2034,14 @@ const AppContent = () => {
             </div>
 
             <button 
+              onClick={handleExport}
+              className="w-full bg-blue-50 dark:bg-blue-900/10 text-blue-600 dark:text-blue-400 font-bold py-4 rounded-2xl border border-blue-100 dark:border-blue-900/20 transition-transform active:scale-95 flex items-center justify-center gap-2"
+            >
+              <Download size={20} />
+              {t('exportData')}
+            </button>
+
+            <button 
               onClick={handleLogout}
               className="w-full bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 font-bold py-4 rounded-2xl border border-red-100 dark:border-red-900/20 transition-transform active:scale-95 flex items-center justify-center gap-2"
             >
@@ -1291,11 +2061,12 @@ const AppContent = () => {
       )}
 
       {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-lg border-t border-slate-100 dark:border-slate-800 flex items-center justify-around px-2 z-40 max-w-md mx-auto">
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-lg border-t border-slate-100 dark:border-slate-800 flex items-center justify-around px-1 z-40 max-w-md mx-auto overflow-x-auto">
         <NavItem screen="dashboard" icon={LayoutDashboard} label={t('dashboard')} />
         <NavItem screen="products" icon={Package} label={t('products')} />
         <NavItem screen="sales" icon={ShoppingCart} label={t('sales')} />
-        <NavItem screen="reports" icon={BarChart3} label={t('reports')} />
+        <NavItem screen="invoices" icon={FileText} label={t('invoices')} />
+        <NavItem screen="credit" icon={CreditCard} label={t('credit')} />
         <NavItem screen="capital" icon={Calculator} label={t('capital')} />
         <NavItem screen="settings" icon={SettingsIcon} label={t('settings')} />
       </nav>
